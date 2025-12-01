@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+spec:
+  selector:
+    app: frontend
+  ports:
+    - port: 80
+      targetPort: 80
+  type: LoadBalancer
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: 150297827149.dkr.ecr.us-east-1.amazonaws.com/frontend:latest
+          ports:
+            - containerPort: 80
+          env:
+            - name: REACT_APP_API_AUTH
+              value: "http://auth-service:4000/auth"
+            - name: REACT_APP_API_CATALOGUE
+              value: "http://catalogue-service:5000/products"
