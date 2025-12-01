@@ -1,9 +1,12 @@
 import axios from "axios";
-
+/*
 // Browser can reach backend via localhost + exposed ports
 export const API_AUTH = "http://localhost:4000/auth";
 export const API_CATALOGUE = "http://localhost:5000/products";
-
+*/
+// If the app's running on k8s then mention correct service name
+export const API_AUTH = "http://auth-service:4000/auth";
+export const API_CATALOGUE = "http:/catalogue-service:5000/products";
 // Create an axios instance
 const api = axios.create();
 

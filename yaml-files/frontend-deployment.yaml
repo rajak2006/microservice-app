@@ -7,7 +7,7 @@ spec:
     app: frontend
   ports:
     - port: 80
-      targetPort: 80
+      targetPort: 3000
   type: LoadBalancer
 ---
 apiVersion: apps/v1
@@ -28,7 +28,7 @@ spec:
         - name: frontend
           image: 150297827149.dkr.ecr.us-east-1.amazonaws.com/frontend:latest
           ports:
-            - containerPort: 80
+            - containerPort: 3000
           env:
             - name: REACT_APP_API_AUTH
               value: "http://auth-service:4000/auth"
