@@ -5,8 +5,8 @@ export const API_AUTH = "http://localhost:4000/auth";
 export const API_CATALOGUE = "http://localhost:5000/products";
 */
 // If the app's running on k8s then mention correct service name
-const API_AUTH = process.env.REACT_APP_API_AUTH || "http://auth-service:4000/auth";
-const API_CATALOGUE = process.env.REACT_APP_API_CATALOGUE || "http://catalogue-service:5000/products";
+const API_AUTH = process.env.REACT_APP_API_AUTH || "/auth";
+const API_CATALOGUE = process.env.REACT_APP_API_CATALOGUE || "/products";
 
 export { API_AUTH, API_CATALOGUE };
 /*

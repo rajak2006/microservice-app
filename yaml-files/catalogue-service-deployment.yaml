@@ -24,7 +24,7 @@ spec:
     spec:
       containers:
         - name: catalogue-service
-          image: 237548286253.dkr.ecr.us-east-1.amazonaws.com/catalogue-service:latest
+          image: 602569698931.dkr.ecr.us-east-1.amazonaws.com/catalogue-service:latest
           ports:
             - containerPort: 5000
           env:

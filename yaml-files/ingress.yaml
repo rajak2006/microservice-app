@@ -5,14 +5,14 @@ metadata:
   annotations:
     kubernetes.io/ingress.class: alb
     alb.ingress.kubernetes.io/scheme: internet-facing
-    alb.ingress.kubernetes.io/subnets: subnet-0de5fe4ebfd43ef4d,subnet-00c3599026945e90a
+    alb.ingress.kubernetes.io/subnets: subnet-0581c59a9824676ef,subnet-0af5969690765e931
     alb.ingress.kubernetes.io/target-type: ip
 spec:
   ingressClassName: alb
   rules:
     - http:
         paths:
-          - path: /auth
+          - path: /auth/
             pathType: Prefix
             backend:
               service:
