@@ -5,7 +5,7 @@ RUN npm install
 COPY . .                  
 RUN npm run build
 
-FROM nginx:alpine
+FROM docker.io/library/nginx:alpine
 COPY --from=build /app/build /usr/share/nginx/html
 RUN sed -i 's/listen       80;/listen 3000;/' /etc/nginx/conf.d/default.conf
 EXPOSE 3000
