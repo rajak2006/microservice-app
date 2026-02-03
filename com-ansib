@@ -1,3 +1,17 @@
+
+- name: Fail if pod not healthy
+  fail:
+    msg: >
+      {{ item.name }} pod did not reach Running/Ready state.
+      Phase: {{ pod_phase.stdout }}
+      Ready: {{ pod_ready.stdout }}
+      Please check with supporting team for further investigation.
+  when: >
+    pod_phase.stdout.strip() != "Running"
+    or
+    (pod_ready.stdout.split() | select('equalto','false') | list | length) > 0
+
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 - name: Generic MicroStrategy Restart Framework
   hosts: localhost
   gather_facts: no
