@@ -1,42 +1,175 @@
-# Wait until pod object exists
-- name: Wait for pod object
-  shell: |
-    oc get pod -n {{ item.namespace }} --no-headers | grep {{ target_name }} | awk '{print $1}' | head -1
-  register: new_pod
-  until: new_pod.stdout != ""
-  retries: 120
-  delay: 10
+- name: Generic MicroStrategy Restart Framework
+  hosts: localhost
+  gather_facts: no
 
-# Wait until pod phase is Running
-- name: Wait until pod phase is Running
-  shell: oc get pod {{ new_pod.stdout }} -n {{ item.namespace }} -o jsonpath='{.status.phase}'
-  register: pod_phase
-  until: pod_phase.stdout == "Running"
-  retries: 180
-  delay: 10
+  vars:
+    ocp_api: https://api.ocp.example.com:6443
+    cluster_name: ocp-prod-01
+    log_dir: /var/log/mstr-ansible
 
-# Wait until all containers are Ready
-- name: Wait until all containers are Ready
-  shell: oc get pod {{ new_pod.stdout }} -n {{ item.namespace }} -o jsonpath='{.status.containerStatuses[*].ready}'
-  register: pod_ready
-  until: "'false' not in pod_ready.stdout"
-  retries: 180
-  delay: 10
+    restart_targets:
+      - name: library
+        kind: deployment
+        namespace: matr-env
+        pattern: library
+      - name: iserver
+        kind: statefulset
+        namespace: matr-env
+        pattern: iserver
+      - name: biweb
+        kind: deployment
+        namespace: matr-env
+        pattern: biweb
 
-# Final health check
-- name: Fail if pod not healthy
-  fail:
-    msg: >
-      {{ item.name }} pod did not reach Running/Ready state.
-      Phase: {{ pod_phase.stdout }}
-      Ready: {{ pod_ready.stdout }}
-      Please check with supporting team for further investigation.
-  when: pod_phase.stdout != "Running" or "'false' in pod_ready.stdout"
+  vars_prompt:
+    - name: ocp_user
+      prompt: "Enter OCP Username ID"
+      private: no
+    - name: ocp_pass
+      prompt: "Enter OCP Password"
+      private: yes
 
-# AFTER
-- name: Show AFTER
-  shell: oc get pod {{ new_pod.stdout }} -n {{ item.namespace }} --no-headers
-  register: after_out
+  pre_tasks:
+    - name: Capture audit details
+      set_fact:
+        run_user: "{{ lookup('env','USER') }}"
+        run_time: "{{ lookup('pipe','date +%Y-%m-%d_%H-%M-%S') }}"
+
+    - name: Ensure log directory exists
+      file:
+        path: "{{ log_dir }}"
+        state: directory
+        mode: '0777'
+
+    - name: Show AUDIT header
+      debug:
+        msg: |
+          ==================================================
+          MicroStrategy OCP Restart Run
+          Cluster     : {{ cluster_name }}
+          Run By      : {{ run_user }}
+          Run Time    : {{ run_time }}
+          ==================================================
+
+  tasks:
+    - name: Login to OpenShift
+      command: >
+        oc login {{ ocp_api }} -u {{ ocp_user }} -p {{ ocp_pass }} --insecure-skip-tls-verify
+
+    - name: Initialize log content
+      set_fact:
+        log_content: |
+          ==================================================
+          MicroStrategy OCP Restart Run
+          ==================================================
+          Cluster     : {{ cluster_name }}
+          Run By      : {{ run_user }}
+          Run Time    : {{ run_time }}
+
+    - name: Process restart targets
+      loop: "{{ restart_targets }}"
+      loop_control:
+        label: "{{ item.name }}"
+      block:
+
+        - name: Show component header
+          debug:
+            msg: |
+              --------------------------------------------------
+              Processing: {{ item.name | upper }}
+              Resource   : {{ item.kind }}
+              Namespace  : {{ item.namespace }}
+              --------------------------------------------------
+
+        - name: Discover resource
+          shell: |
+            case "{{ item.kind }}" in
+              deployment) oc get deployment -n {{ item.namespace }} --no-headers | grep -i {{ item.pattern }} | awk '{print $1}' ;;
+              statefulset) oc get statefulset -n {{ item.namespace }} --no-headers | grep -i {{ item.pattern }} | awk '{print $1}' ;;
+            esac
+          register: res_name
+
+        - name: Set resource name
+          set_fact:
+            target_name: "{{ res_name.stdout_lines[0] }}"
+
+        - name: Find current pod (BEFORE)
+          shell: |
+            oc get pod -n {{ item.namespace }} --no-headers | grep {{ target_name }} | awk '{print $1}' | head -1
+          register: before_pod
+
+        - name: Show BEFORE
+          shell: oc get pod {{ before_pod.stdout }} -n {{ item.namespace }} --no-headers
+          register: before_out
+
+        - name: Append BEFORE to log
+          set_fact:
+            log_content: "{{ log_content }}\n\n{{ item.name }} BEFORE:\n{{ before_out.stdout }}"
+
+        - name: Restart resource
+          shell: |
+            case "{{ item.kind }}" in
+              deployment) oc rollout restart deployment {{ target_name }} -n {{ item.namespace }} ;;
+              statefulset) oc rollout restart statefulset {{ target_name }} -n {{ item.namespace }} ;;
+            esac
+
+        # ---- UNIVERSAL WAIT ----
+
+        - name: Wait for pod object
+          shell: |
+            oc get pod -n {{ item.namespace }} --no-headers | grep {{ target_name }} | grep -v Terminating | awk '{print $1}' | head -1
+          register: new_pod
+          until: new_pod.stdout != ""
+          retries: 120
+          delay: 10
+
+        - name: Wait until pod phase is Running
+          shell: oc get pod {{ new_pod.stdout }} -n {{ item.namespace }} -o jsonpath='{.status.phase}'
+          register: pod_phase
+          until: pod_phase.stdout == "Running"
+          retries: 180
+          delay: 10
+
+        - name: Wait until all containers are Ready
+          shell: oc get pod {{ new_pod.stdout }} -n {{ item.namespace }} -o jsonpath='{.status.containerStatuses[*].ready}'
+          register: pod_ready
+          until: "'false' not in pod_ready.stdout"
+          retries: 180
+          delay: 10
+
+        - name: Fail if pod not healthy
+          fail:
+            msg: >
+              {{ item.name }} pod did not reach Running/Ready state.
+              Phase: {{ pod_phase.stdout }}
+              Ready: {{ pod_ready.stdout }}
+              Please check with supporting team for further investigation.
+          when: pod_phase.stdout != "Running" or "'false' in pod_ready.stdout"
+
+        - name: Show AFTER
+          shell: oc get pod {{ new_pod.stdout }} -n {{ item.namespace }} --no-headers
+          register: after_out
+
+        - name: Append AFTER to log
+          set_fact:
+            log_content: "{{ log_content }}\n{{ item.name }} AFTER:\n{{ after_out.stdout }}"
+
+    - name: Save full run output to log archive
+      copy:
+        dest: "{{ log_dir }}/mstr_restart_{{ run_time }}.log"
+        content: "{{ log_content }}"
+
+    - name: Find all existing logs
+      shell: ls -1t {{ log_dir }}/mstr_restart_*.log 2>/dev/null || true
+      register: log_list
+
+    - name: Delete old logs (keep last 5)
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ log_list.stdout_lines[5:] }}"
+      when: log_list.stdout_lines | length > 5
+
 
 @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@222
 
