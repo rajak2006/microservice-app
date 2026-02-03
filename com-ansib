@@ -1,3 +1,95 @@
+    - name: Process restart targets
+      loop: "{{ restart_targets }}"
+      loop_control:
+        label: "{{ item.name }}"
+      block:
+
+        - name: Show component header
+          debug:
+            msg: |
+              --------------------------------------------------
+              Processing: {{ item.name | upper }}
+              Resource   : {{ item.kind }}
+              Namespace  : {{ item.namespace }}
+              --------------------------------------------------
+
+        - name: Discover resource
+          shell: |
+            case "{{ item.kind }}" in
+              deployment) oc get deployment -n {{ item.namespace }} --no-headers | grep -i {{ item.pattern }} | awk '{print $1}' ;;
+              statefulset) oc get statefulset -n {{ item.namespace }} --no-headers | grep -i {{ item.pattern }} | awk '{print $1}' ;;
+              pod) oc get pod -n {{ item.namespace }} --no-headers | grep -i {{ item.pattern }} | awk '{print $1}' ;;
+            esac
+          register: res_name
+
+        - name: Set resource name
+          set_fact:
+            target_name: "{{ res_name.stdout_lines[0] }}"
+
+        - name: Find current pod (BEFORE)
+          shell: |
+            oc get pod -n {{ item.namespace }} --no-headers | grep {{ target_name }} | awk '{print $1}' | head -1
+          register: before_pod
+
+        - name: Show BEFORE
+          shell: oc get pod {{ before_pod.stdout }} -n {{ item.namespace }} --no-headers
+          register: before_out
+
+        - name: Append BEFORE to log
+          set_fact:
+            log_content: "{{ log_content }}\n\n{{ item.name }} BEFORE:\n{{ before_out.stdout }}"
+
+        - name: Restart resource
+          shell: |
+            case "{{ item.kind }}" in
+              deployment) oc rollout restart deployment {{ target_name }} -n {{ item.namespace }} ;;
+              statefulset) oc rollout restart statefulset {{ target_name }} -n {{ item.namespace }} ;;
+              pod) oc delete pod {{ target_name }} -n {{ item.namespace }} ;;
+            esac
+
+        - name: Wait until old pod is gone
+          shell: |
+            oc get pod {{ before_pod.stdout }} -n {{ item.namespace }} --no-headers 2>/dev/null || true
+          register: old_pod_check
+          until: old_pod_check.stdout == ""
+          retries: 30
+          delay: 10
+
+        - name: Find new pod
+          shell: |
+            oc get pod -n {{ item.namespace }} --no-headers | grep {{ target_name }} | awk '{print $1}' | head -1
+          register: new_pod
+          until: new_pod.stdout != ""
+          retries: 30
+          delay: 10
+
+        - name: Wait until new pod is Running
+          shell: oc get pod {{ new_pod.stdout }} -n {{ item.namespace }} -o jsonpath='{.status.phase}'
+          register: pod_phase
+          until: pod_phase.stdout == "Running"
+          retries: 30
+          delay: 10
+
+        - name: Fail if pod not healthy
+          fail:
+            msg: >
+              {{ item.name }} pod did not reach Running state.
+              Current state: {{ pod_phase.stdout }}.
+              Please check with supporting team for further investigation.
+          when: pod_phase.stdout != "Running"
+
+        - name: Show AFTER
+          shell: oc get pod {{ new_pod.stdout }} -n {{ item.namespace }} --no-headers
+          register: after_out
+
+        - name: Append AFTER to log
+          set_fact:
+            log_content: "{{ log_content }}\n{{ item.name }} AFTER:\n{{ after_out.stdout }}"
+
+
+
+
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 - name: Generic MicroStrategy Restart Framework
   hosts: localhost
   gather_facts: no
