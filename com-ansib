@@ -1,4 +1,31 @@
+- hosts: localhost
+  gather_facts: no
 
+  vars:
+    namespace: mstr-sandbox01
+    pod_name: mstr-env-1n9qq-library-5876cdc8f-zvfjs
+
+  tasks:
+    - name: Wait until pod is Running
+      shell: oc get pod {{ pod_name }} -n {{ namespace }} -o jsonpath='{.status.phase}'
+      register: phase
+      until: phase.stdout == "Running"
+      retries: 30
+      delay: 5
+
+    - name: Wait until all containers Ready
+      shell: oc get pod {{ pod_name }} -n {{ namespace }} -o jsonpath='{.status.containerStatuses[*].ready}'
+      register: ready
+      until: "'false' not in ready.stdout"
+      retries: 30
+      delay: 5
+
+    - debug:
+        msg: "POD READY: phase={{ phase.stdout }} ready={{ ready.stdout }}"
+
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!
 - name: Generic MicroStrategy Restart Framework
   hosts: localhost
   gather_facts: no
