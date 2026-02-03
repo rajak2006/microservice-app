@@ -1,0 +1,66 @@
+- name: Generic MicroStrategy Restart Framework
+  hosts: localhost
+  gather_facts: no
+  vars_files:
+    - vars.yml
+
+  tasks:
+
+  - name: Login to OpenShift using Service Account
+    command: >
+      oc login {{ ocp_api }} --token={{ ocp_token }} --insecure-skip-tls-verify
+
+  - name: Process restart targets
+    loop: "{{ restart_targets }}"
+    loop_control:
+      label: "{{ item.name }}"
+    block:
+
+      - name: Discover resource
+        shell: |
+          case "{{ item.kind }}" in
+            deployment) oc get deployment -n {{ item.namespace }} --no-headers | grep -i {{ item.pattern }} | awk '{print $1}' ;;
+            statefulset) oc get statefulset -n {{ item.namespace }} --no-headers | grep -i {{ item.pattern }} | awk '{print $1}' ;;
+            pod) oc get pod -n {{ item.namespace }} --no-headers | grep -i {{ item.pattern }} | awk '{print $1}' ;;
+          esac
+        register: res_name
+
+      - name: Set resource name
+        set_fact:
+          target_name: "{{ res_name.stdout_lines[0] }}"
+
+      - name: Capture BEFORE pod
+        shell: |
+          oc get pod -n {{ item.namespace }} --no-headers | grep {{ target_name }} | awk '{print $1}' | head -1
+        register: before_pod
+
+      - name: Show BEFORE
+        shell: oc get pod {{ before_pod.stdout }} -n {{ item.namespace }} --no-headers
+        register: before_out
+
+      - debug:
+          msg: "{{ before_out.stdout }}"
+
+      - name: Restart resource
+        shell: |
+          case "{{ item.kind }}" in
+            deployment) oc rollout restart deployment {{ target_name }} -n {{ item.namespace }} ;;
+            statefulset) oc rollout restart statefulset {{ target_name }} -n {{ item.namespace }} ;;
+            pod) oc delete pod {{ target_name }} -n {{ item.namespace }} ;;
+          esac
+        when: not dry_run
+
+      - name: Wait for new pod
+        shell: |
+          oc get pod -n {{ item.namespace }} --no-headers | grep {{ target_name }} | awk '{print $1}' | head -1
+        register: after_pod
+        until: after_pod.stdout != before_pod.stdout
+        retries: 20
+        delay: 10
+
+      - name: Show AFTER
+        shell: oc get pod {{ after_pod.stdout }} -n {{ item.namespace }} --no-headers
+        register: after_out
+
+      - debug:
+          msg: "{{ after_out.stdout }}"
