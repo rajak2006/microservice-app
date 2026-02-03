@@ -1,3 +1,18 @@
+
+
+  - name: Find all existing MSTR logs
+    shell: |
+      ls -1t /var/log/mstr-ansible/mstr_restart_*.log 2>/dev/null || true
+    register: log_list
+
+  - name: Delete old logs (keep only last 5)
+    file:
+      path: "{{ item }}"
+      state: absent
+    loop: "{{ log_list.stdout_lines[5:] }}"
+    when: log_list.stdout_lines | length > 5
+
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 1️⃣ Find Library pod BEFORE restart
 
 Add this after Set Library deployment
