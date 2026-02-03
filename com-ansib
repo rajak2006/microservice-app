@@ -1,4 +1,47 @@
-    - name: Process restart targets
+# Wait until pod object exists
+- name: Wait for pod object
+  shell: |
+    oc get pod -n {{ item.namespace }} --no-headers | grep {{ target_name }} | awk '{print $1}' | head -1
+  register: new_pod
+  until: new_pod.stdout != ""
+  retries: 120
+  delay: 10
+
+# Wait until pod phase is Running
+- name: Wait until pod phase is Running
+  shell: oc get pod {{ new_pod.stdout }} -n {{ item.namespace }} -o jsonpath='{.status.phase}'
+  register: pod_phase
+  until: pod_phase.stdout == "Running"
+  retries: 180
+  delay: 10
+
+# Wait until all containers are Ready
+- name: Wait until all containers are Ready
+  shell: oc get pod {{ new_pod.stdout }} -n {{ item.namespace }} -o jsonpath='{.status.containerStatuses[*].ready}'
+  register: pod_ready
+  until: "'false' not in pod_ready.stdout"
+  retries: 180
+  delay: 10
+
+# Final health check
+- name: Fail if pod not healthy
+  fail:
+    msg: >
+      {{ item.name }} pod did not reach Running/Ready state.
+      Phase: {{ pod_phase.stdout }}
+      Ready: {{ pod_ready.stdout }}
+      Please check with supporting team for further investigation.
+  when: pod_phase.stdout != "Running" or "'false' in pod_ready.stdout"
+
+# AFTER
+- name: Show AFTER
+  shell: oc get pod {{ new_pod.stdout }} -n {{ item.namespace }} --no-headers
+  register: after_out
+
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@222
+
+
+- name: Process restart targets
       loop: "{{ restart_targets }}"
       loop_control:
         label: "{{ item.name }}"
