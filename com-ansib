@@ -1,20 +1,55 @@
-Excellent thinking 👍
-What you’re asking for is **enterprise-grade, future-proof design**.
+Perfect 👍 thanks for calling that out — let’s **merge everything into ONE final enterprise playbook** with:
 
-We will make your playbook **generic** so that:
+✔ OCP login (SA + Vault)
+✔ Generic restart targets
+✔ BEFORE / AFTER pod status
+✔ **Audit header**
+✔ **Log file creation**
+✔ **Auto-delete old logs (keep last 5)**
 
-> 🔁 You only change a variable list
-> 📦 It can handle **Deployments, StatefulSets, or Pods**
-> ♻️ It restarts them correctly
-> 📊 Shows BEFORE & AFTER pod status
-
-No code change in future — only variables.
+You now get **end-to-end production automation**.
 
 ---
 
-# 🔧 1) Update `vars.yml`
+# 📁 Folder Structure
+
+```
+mstr-ocp-ansible/
+├── inventory
+├── vars.yml
+├── mstr_restart.yml
+└── group_vars/all/vault.yml
+```
+
+---
+
+# 📄 inventory
+
+```ini
+[local]
+localhost ansible_connection=local
+```
+
+---
+
+# 📄 group_vars/all/vault.yml  (encrypted)
 
 ```yaml
+vault_ocp_token: sha256~PASTE_TOKEN
+```
+
+---
+
+# 📄 vars.yml
+
+```yaml
+ocp_api: https://api.ocp.example.com:6443
+ocp_token: "{{ vault_ocp_token }}"
+
+cluster_name: ocp-prod-01
+dry_run: false
+log_dir: /var/log/mstr-ansible
+
 restart_targets:
   - name: library
     kind: deployment
@@ -25,83 +60,144 @@ restart_targets:
     kind: statefulset
     namespace: matr-env
     pattern: iserver
-```
 
-Later you just add:
-
-```yaml
-  - name: search
+  - name: biweb
     kind: deployment
     namespace: matr-env
-    pattern: search
+    pattern: biweb
 ```
 
 ---
 
-# 🧠 2) Generic restart logic (drop-in block)
-
-Replace your discovery + restart logic with this:
+# 📄 mstr_restart.yml (FINAL)
 
 ```yaml
-- name: Process restart targets
-  loop: "{{ restart_targets }}"
-  loop_control:
-    label: "{{ item.name }}"
-  block:
+- name: Generic MicroStrategy Restart Framework
+  hosts: localhost
+  gather_facts: no
+  vars_files:
+    - vars.yml
 
-    - name: Discover resource
-      shell: |
-        case "{{ item.kind }}" in
-          deployment) oc get deployment -n {{ item.namespace }} --no-headers | grep -i {{ item.pattern }} | awk '{print $1}' ;;
-          statefulset) oc get statefulset -n {{ item.namespace }} --no-headers | grep -i {{ item.pattern }} | awk '{print $1}' ;;
-          pod) oc get pod -n {{ item.namespace }} --no-headers | grep -i {{ item.pattern }} | awk '{print $1}' ;;
-        esac
-      register: res_name
-
-    - name: Set resource name
+  pre_tasks:
+    - name: Capture audit details
       set_fact:
-        target_name: "{{ res_name.stdout_lines[0] }}"
+        run_user: "{{ lookup('env','USER') }}"
+        run_time: "{{ lookup('pipe','date +%Y-%m-%d_%H-%M-%S') }}"
 
-    - name: Capture BEFORE pod
-      shell: |
-        oc get pod -n {{ item.namespace }} --no-headers | grep {{ target_name }} | awk '{print $1}' | head -1
-      register: before_pod
+    - name: Ensure log directory exists
+      file:
+        path: "{{ log_dir }}"
+        state: directory
+        mode: '0777'
 
-    - name: Show BEFORE
-      shell: oc get pod {{ before_pod.stdout }} -n {{ item.namespace }} --no-headers
-      register: before_out
+    - name: Show AUDIT header
+      debug:
+        msg: |
+          ==================================================
+          MicroStrategy OCP Restart Run
+          Cluster     : {{ cluster_name }}
+          Run By      : {{ run_user }}
+          Run Time    : {{ run_time }}
+          ==================================================
 
-    - debug:
-        msg: "{{ before_out.stdout }}"
+  tasks:
 
-    - name: Restart resource
-      shell: |
-        case "{{ item.kind }}" in
-          deployment) oc rollout restart deployment {{ target_name }} -n {{ item.namespace }} ;;
-          statefulset) oc rollout restart statefulset {{ target_name }} -n {{ item.namespace }} ;;
-          pod) oc delete pod {{ target_name }} -n {{ item.namespace }} ;;
-        esac
-      when: not dry_run
+  - name: Login to OpenShift
+    command: >
+      oc login {{ ocp_api }} --token={{ ocp_token }} --insecure-skip-tls-verify
 
-    - name: Wait for new pod
-      shell: oc get pod -n {{ item.namespace }} --no-headers | grep {{ target_name }} | awk '{print $1}' | head -1
-      register: after_pod
-      until: after_pod.stdout != before_pod.stdout
-      retries: 20
-      delay: 10
+  - name: Initialize log content
+    set_fact:
+      log_content: |
+        ==================================================
+        MicroStrategy OCP Restart Run
+        ==================================================
+        Cluster     : {{ cluster_name }}
+        Run By      : {{ run_user }}
+        Run Time    : {{ run_time }}
 
-    - name: Show AFTER
-      shell: oc get pod {{ after_pod.stdout }} -n {{ item.namespace }} --no-headers
-      register: after_out
+  - name: Process restart targets
+    loop: "{{ restart_targets }}"
+    loop_control:
+      label: "{{ item.name }}"
+    block:
 
-    - debug:
-        msg: "{{ after_out.stdout }}"
+      - name: Discover resource
+        shell: |
+          case "{{ item.kind }}" in
+            deployment) oc get deployment -n {{ item.namespace }} --no-headers | grep -i {{ item.pattern }} | awk '{print $1}' ;;
+            statefulset) oc get statefulset -n {{ item.namespace }} --no-headers | grep -i {{ item.pattern }} | awk '{print $1}' ;;
+            pod) oc get pod -n {{ item.namespace }} --no-headers | grep -i {{ item.pattern }} | awk '{print $1}' ;;
+          esac
+        register: res_name
+
+      - name: Set resource name
+        set_fact:
+          target_name: "{{ res_name.stdout_lines[0] }}"
+
+      - name: Capture BEFORE pod
+        shell: |
+          oc get pod -n {{ item.namespace }} --no-headers | grep {{ target_name }} | awk '{print $1}' | head -1
+        register: before_pod
+
+      - name: Show BEFORE
+        shell: oc get pod {{ before_pod.stdout }} -n {{ item.namespace }} --no-headers
+        register: before_out
+
+      - name: Append BEFORE to log
+        set_fact:
+          log_content: "{{ log_content }}\n\n{{ item.name }} BEFORE:\n{{ before_out.stdout }}"
+
+      - name: Restart resource
+        shell: |
+          case "{{ item.kind }}" in
+            deployment) oc rollout restart deployment {{ target_name }} -n {{ item.namespace }} ;;
+            statefulset) oc rollout restart statefulset {{ target_name }} -n {{ item.namespace }} ;;
+            pod) oc delete pod {{ target_name }} -n {{ item.namespace }} ;;
+          esac
+        when: not dry_run
+
+      - name: Wait for new pod
+        shell: |
+          oc get pod -n {{ item.namespace }} --no-headers | grep {{ target_name }} | awk '{print $1}' | head -1
+        register: after_pod
+        until: after_pod.stdout != before_pod.stdout
+        retries: 20
+        delay: 10
+
+      - name: Show AFTER
+        shell: oc get pod {{ after_pod.stdout }} -n {{ item.namespace }} --no-headers
+        register: after_out
+
+      - name: Append AFTER to log
+        set_fact:
+          log_content: "{{ log_content }}\n{{ item.name }} AFTER:\n{{ after_out.stdout }}"
+
+  - name: Save full run output to log archive
+    copy:
+      dest: "{{ log_dir }}/mstr_restart_{{ run_time }}.log"
+      content: "{{ log_content }}"
+
+  - name: Find all existing logs
+    shell: ls -1t {{ log_dir }}/mstr_restart_*.log 2>/dev/null || true
+    register: log_list
+
+  - name: Delete old logs (keep last 5)
+    file:
+      path: "{{ item }}"
+      state: absent
+    loop: "{{ log_list.stdout_lines[5:] }}"
+    when: log_list.stdout_lines | length > 5
 ```
 
 ---
 
-## 🎯 Now in future:
+# ▶️ Run
 
-You only change **vars.yml** — never the playbook again.
+```bash
+ansible-playbook -i inventory mstr_restart.yml --ask-vault-pass
+```
 
-This is how **platform teams design automation frameworks** 👏
+---
+
+Now you have **secure, auditable, future-proof automation** 💼
