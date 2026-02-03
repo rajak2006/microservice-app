@@ -1,3 +1,179 @@
+- name: MicroStrategy Generic Restart Framework
+  hosts: localhost
+  gather_facts: no
+  vars_files:
+    - vars.yml
+
+  vars_prompt:
+    - name: ocp_user
+      prompt: "Enter OCP Username (FID)"
+      private: no
+    - name: ocp_pass
+      prompt: "Enter OCP Password"
+      private: yes
+
+  pre_tasks:
+    - name: Capture audit details
+      set_fact:
+        run_user: "{{ lookup('env','USER') }}"
+        run_time: "{{ lookup('pipe','date +%Y-%m-%d_%H-%M-%S') }}"
+
+    - name: Show run mode
+      debug:
+        msg: >
+          Running in {{ 'DRY-RUN (no changes)' if dry_run else 'REAL EXECUTION' }} mode
+
+  tasks:
+
+  - name: Login to OpenShift
+    command: >
+      oc login {{ ocp_api }} -u {{ ocp_user }} -p {{ ocp_pass }} --insecure-skip-tls-verify
+
+  # -------- Discover targets --------
+  - name: Discover restart targets
+    shell: |
+      case "{{ item.kind }}" in
+        deployment) oc get deployment -n {{ namespace }} --no-headers | grep -i {{ item.pattern }} | awk '{print $1}' ;;
+        statefulset) oc get statefulset -n {{ namespace }} --no-headers | grep -i {{ item.pattern }} | awk '{print $1}' ;;
+        pod) oc get pod -n {{ namespace }} --no-headers | grep -i {{ item.pattern }} | awk '{print $1}' | head -1 ;;
+      esac
+    register: found
+    loop: "{{ restart_targets }}"
+    loop_control:
+      label: "{{ item.name }}"
+
+  - name: Build target list
+    set_fact:
+      targets: "{{ targets | default([]) + [ {
+          'name': item.item.name,
+          'kind': item.item.kind,
+          'pattern': item.item.pattern,
+          'resource': item.stdout
+      } ] }}"
+    loop: "{{ found.results }}"
+
+  - name: Show discovered components
+    debug:
+      var: targets
+
+  # -------- Audit header --------
+  - name: Show AUDIT header
+    debug:
+      msg: |
+        ==================================================
+        MicroStrategy OCP Restart Run
+        Cluster     : {{ cluster_name }}
+        Namespace   : {{ namespace }}
+        Run By      : {{ run_user }}
+        Run Time    : {{ run_time }}
+        ==================================================
+
+  # -------- Process each target --------
+  - name: Process restart targets
+    loop: "{{ targets }}"
+    loop_control:
+      label: "{{ item.name }}"
+    block:
+
+      - name: BEFORE status
+        shell: |
+          echo "===== {{ item.name }} BEFORE ====="
+          case "{{ item.kind }}" in
+            deployment) oc get deployment {{ item.resource }} -n {{ namespace }} ;;
+            statefulset) oc get statefulset {{ item.resource }} -n {{ namespace }} ;;
+            pod) oc get pod {{ item.resource }} -n {{ namespace }} ;;
+          esac
+        register: before_status
+
+      - debug:
+          msg: "{{ before_status.stdout }}"
+
+      - name: Dry-run message
+        debug:
+          msg: "DRY-RUN: Would restart {{ item.kind }} {{ item.resource }}"
+        when: dry_run
+
+      - name: Restart resource
+        shell: |
+          case "{{ item.kind }}" in
+            deployment) oc rollout restart deployment {{ item.resource }} -n {{ namespace }} ;;
+            statefulset) oc rollout restart statefulset {{ item.resource }} -n {{ namespace }} ;;
+            pod) oc delete pod {{ item.resource }} -n {{ namespace }} ;;
+          esac
+        when: not dry_run
+
+      # ---- waits ----
+      - name: Wait for deployment rollout
+        command: oc rollout status deployment {{ item.resource }} -n {{ namespace }} --timeout=300s
+        when: not dry_run and item.kind == "deployment"
+
+      - name: Wait for statefulset pod
+        shell: |
+          oc get pod -n {{ namespace }} --no-headers | grep {{ item.resource }} | awk '{print $1}' | head -1
+        register: ss_pod
+        until: ss_pod.stdout != ""
+        retries: 20
+        delay: 15
+        when: not dry_run and item.kind == "statefulset"
+
+      - name: Wait for pod Running
+        shell: oc get pod {{ ss_pod.stdout }} -n {{ namespace }} -o jsonpath='{.status.phase}'
+        register: pod_state
+        until: pod_state.stdout == "Running"
+        retries: 20
+        delay: 15
+        when: not dry_run and item.kind in ["statefulset","pod"]
+
+      # ---- final check ----
+      - name: Final check
+        shell: |
+          case "{{ item.kind }}" in
+            deployment) oc get deployment {{ item.resource }} -n {{ namespace }} ;;
+            statefulset) oc get pod {{ ss_pod.stdout }} -n {{ namespace }} ;;
+            pod) oc get pod {{ item.resource }} -n {{ namespace }} ;;
+          esac
+        register: final
+
+      - name: Fail if unhealthy
+        fail:
+          msg: "{{ item.name }} unhealthy:\n{{ final.stdout }}"
+        when: final.stdout is search("CrashLoopBackOff|Error|ImagePullBackOff")
+
+      - name: AFTER status
+        shell: |
+          echo "===== {{ item.name }} AFTER ====="
+          case "{{ item.kind }}" in
+            deployment) oc get deployment {{ item.resource }} -n {{ namespace }} ;;
+            statefulset) oc get pod {{ ss_pod.stdout }} -n {{ namespace }} ;;
+            pod) oc get pod {{ item.resource }} -n {{ namespace }} ;;
+          esac
+        register: after_status
+
+      - debug:
+          msg: "{{ after_status.stdout }}"
+
+  - name: Save full run output to log archive
+    copy:
+      dest: "/var/log/mstr-ansible/mstr_restart_{{ run_time }}.log"
+      content: |
+        ==================================================
+        MicroStrategy OCP Restart Run
+        ==================================================
+        Cluster     : {{ cluster_name }}
+        Namespace   : {{ namespace }}
+        Run By      : {{ run_user }}
+        Run Time    : {{ run_time }}
+
+        {% for t in targets %}
+        ---- {{ t.name }} ----
+        Resource: {{ t.resource }}
+        {% endfor %}
+
+
+
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+
+
 - name: Generic MicroStrategy Restart Framework
   hosts: localhost
   gather_facts: no
