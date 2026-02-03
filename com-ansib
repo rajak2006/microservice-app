@@ -1,4 +1,17 @@
+- name: Get container ready flags
+  shell: oc get pod {{ new_pod.stdout }} -n {{ item.namespace }} -o jsonpath='{.status.containerStatuses[*].ready}'
+  register: pod_ready
 
+- name: Set container readiness result
+  set_fact:
+    containers_not_ready: "{{ pod_ready.stdout.split() | select('equalto','false') | list | length }}"
+
+- name: Wait until all containers are Ready
+  until: containers_not_ready == 0
+  retries: 300
+  delay: 10
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 - name: Generic MicroStrategy Restart Framework
   hosts: localhost
   gather_facts: no
