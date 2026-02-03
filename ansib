@@ -1,3 +1,52 @@
+1️⃣ Find Library pod BEFORE restart
+
+Add this after Set Library deployment
+
+- name: Find Library pod (BEFORE)
+  shell: |
+    oc get pod -n {{ namespace }} --no-headers \
+    | grep {{ library_deployment }} \
+    | awk '{print $1}' | head -1
+  register: lib_pod_before
+
+2️⃣ BEFORE status (same format as IServer)
+- name: Show BEFORE status
+  shell: |
+    echo "================ BEFORE STATUS ================"
+    oc get pod {{ lib_pod_before.stdout }} -n {{ namespace }}
+    oc get pod {{ iserver_pod }} -n {{ namespace }}
+    echo "=============================================="
+  register: before_status
+
+- debug:
+    msg: "{{ before_status.stdout }}"
+
+3️⃣ Restart (no change)
+
+Your restart tasks stay as they are.
+
+4️⃣ Find NEW Library pod AFTER restart
+- name: Find Library pod (AFTER)
+  shell: |
+    oc get pod -n {{ namespace }} --no-headers \
+    | grep {{ library_deployment }} \
+    | awk '{print $1}' | head -1
+  register: lib_pod_after
+
+5️⃣ AFTER status (same as IServer)
+- name: Show AFTER status
+  shell: |
+    echo "================ AFTER STATUS ================"
+    oc get pod {{ lib_pod_after.stdout }} -n {{ namespace }}
+    oc get pod {{ iserver_pod }} -n {{ namespace }}
+    echo "============================================="
+  register: after_status
+
+- debug:
+    msg: "{{ after_status.stdout }}"
+
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+good
 - name: MicroStrategy Library & IServer Restart
   hosts: localhost
   gather_facts: no
