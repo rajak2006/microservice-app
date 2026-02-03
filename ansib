@@ -1,3 +1,153 @@
+- name: MicroStrategy Library & IServer Restart
+  hosts: localhost
+  gather_facts: no
+  vars_files:
+    - vars.yml
+
+  vars_prompt:
+    - name: ocp_user
+      prompt: "Enter OCP Username (FID)"
+      private: no
+    - name: ocp_pass
+      prompt: "Enter OCP Password"
+      private: yes
+
+  pre_tasks:
+    - name: Capture audit details
+      set_fact:
+        run_user: "{{ lookup('env','USER') }}"
+        run_time: "{{ lookup('pipe','date +%Y-%m-%d_%H-%M-%S') }}"
+
+    - name: Show run mode
+      debug:
+        msg: >
+          Running in {{ 'DRY-RUN (no changes)' if dry_run else 'REAL EXECUTION' }} mode
+
+  tasks:
+
+  - name: Login to OpenShift
+    command: >
+      oc login {{ ocp_api }} -u {{ ocp_user }} -p {{ ocp_pass }} --insecure-skip-tls-verify
+
+  - name: Find Library deployment
+    shell: oc get deployment -n {{ namespace }} --no-headers | awk '{print $1}' | grep -i {{ library_pattern }}
+    register: lib_name
+
+  - name: Set Library deployment
+    set_fact:
+      library_deployment: "{{ lib_name.stdout_lines[0] }}"
+
+  - name: Find IServer pod
+    shell: oc get pod -n {{ namespace }} --no-headers | awk '{print $1}' | grep -i {{ iserver_pattern }} | head -1
+    register: isrv_name
+
+  - name: Set IServer pod
+    set_fact:
+      iserver_pod: "{{ isrv_name.stdout }}"
+
+  - name: Show discovered components
+    debug:
+      msg:
+        - "Library Deployment: {{ library_deployment }}"
+        - "IServer Pod: {{ iserver_pod }}"
+
+  - name: Show AUDIT header
+    debug:
+      msg: |
+        ==================================================
+        MicroStrategy OCP Restart Run
+        Cluster     : {{ cluster_name }}
+        Namespace   : {{ namespace }}
+        Run By      : {{ run_user }}
+        Run Time    : {{ run_time }}
+        Library     : {{ library_deployment }}
+        IServer Pod : {{ iserver_pod }}
+        ==================================================
+
+  - name: Show BEFORE status
+    shell: |
+      echo "================ BEFORE STATUS ================"
+      oc get deployment {{ library_deployment }} -n {{ namespace }}
+      echo ""
+      oc get pod {{ iserver_pod }} -n {{ namespace }}
+      echo "=============================================="
+    register: before_status
+
+  - debug:
+      msg: "{{ before_status.stdout }}"
+
+  - name: Dry-run message
+    debug:
+      msg:
+        - "DRY-RUN: Would restart deployment {{ library_deployment }}"
+        - "DRY-RUN: Would delete pod {{ iserver_pod }}"
+    when: dry_run
+
+  - name: Restart Library deployment
+    command: oc rollout restart deployment {{ library_deployment }} -n {{ namespace }}
+    when: not dry_run
+
+  - name: Restart IServer pod
+    command: oc delete pod {{ iserver_pod }} -n {{ namespace }}
+    when: not dry_run
+
+  - name: Wait for Library
+    command: oc rollout status deployment {{ library_deployment }} -n {{ namespace }} --timeout=300s
+    when: not dry_run
+
+  - name: Wait for IServer
+    shell: oc get pod {{ iserver_pod }} -n {{ namespace }} -o jsonpath='{.status.phase}'
+    register: pod_state
+    until: pod_state.stdout == "Running"
+    retries: 20
+    delay: 15
+    when: not dry_run
+
+  - name: Final pod check
+    command: oc get pod {{ iserver_pod }} -n {{ namespace }}
+    register: final
+
+  - name: Fail if unhealthy
+    fail:
+      msg: "IServer unhealthy: {{ final.stdout }}"
+    when: final.stdout is search("CrashLoopBackOff|Error|ImagePullBackOff")
+
+  - name: Show AFTER status
+    shell: |
+      echo "================ AFTER STATUS ================"
+      oc get deployment {{ library_deployment }} -n {{ namespace }}
+      echo ""
+      oc get pod {{ iserver_pod }} -n {{ namespace }}
+      echo "============================================="
+    register: after_status
+
+  - debug:
+      msg: "{{ after_status.stdout }}"
+
+  - name: Save full run output to log archive
+    copy:
+      dest: "/var/log/mstr-ansible/mstr_restart_{{ run_time }}.log"
+      content: |
+        ==================================================
+        MicroStrategy OCP Restart Run
+        ==================================================
+        Cluster     : {{ cluster_name }}
+        Namespace   : {{ namespace }}
+        Run By      : {{ run_user }}
+        Run Time    : {{ run_time }}
+        Library     : {{ library_deployment }}
+        IServer Pod : {{ iserver_pod }}
+
+        ---------------- BEFORE ----------------
+        {{ before_status.stdout }}
+
+        ---------------- AFTER -----------------
+        {{ after_status.stdout }}
+
+        ==================================================
+
+
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 Perfect, that’s the **right design** 👍
 We should **auto-discover** the *library* and *iserver* instead of hard-coding names.
 
