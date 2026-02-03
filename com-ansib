@@ -20,6 +20,11 @@
         kind: deployment
         namespace: matr-env
         pattern: biweb
+      # example pod
+      # - name: redis
+      #   kind: pod
+      #   namespace: matr-env
+      #   pattern: redis
 
   vars_prompt:
     - name: ocp_user
@@ -72,22 +77,22 @@
         label: "{{ item.name }}"
       block:
 
-        - name: Show component header
+        - name: === START COMPONENT ===
           debug:
-            msg: |
-              --------------------------------------------------
-              Processing: {{ item.name | upper }}
-              Resource   : {{ item.kind }}
-              Namespace  : {{ item.namespace }}
-              --------------------------------------------------
+            msg: ">>> Processing {{ item.name | upper }} ({{ item.kind }}) in {{ item.namespace }}"
 
         - name: Discover resource
           shell: |
             case "{{ item.kind }}" in
               deployment) oc get deployment -n {{ item.namespace }} --no-headers | grep -i {{ item.pattern }} | awk '{print $1}' ;;
               statefulset) oc get statefulset -n {{ item.namespace }} --no-headers | grep -i {{ item.pattern }} | awk '{print $1}' ;;
+              pod) oc get pod -n {{ item.namespace }} --no-headers | grep -i {{ item.pattern }} | awk '{print $1}' ;;
             esac
           register: res_name
+
+        - name: Status: Resource discovered
+          debug:
+            msg: "Discovered {{ item.kind }} = {{ res_name.stdout_lines[0] }}"
 
         - name: Set resource name
           set_fact:
@@ -97,6 +102,10 @@
           shell: |
             oc get pod -n {{ item.namespace }} --no-headers | grep {{ target_name }} | awk '{print $1}' | head -1
           register: before_pod
+
+        - name: Status: BEFORE pod found
+          debug:
+            msg: "BEFORE pod = {{ before_pod.stdout }}"
 
         - name: Show BEFORE
           shell: oc get pod {{ before_pod.stdout }} -n {{ item.namespace }} --no-headers
@@ -111,7 +120,12 @@
             case "{{ item.kind }}" in
               deployment) oc rollout restart deployment {{ target_name }} -n {{ item.namespace }} ;;
               statefulset) oc rollout restart statefulset {{ target_name }} -n {{ item.namespace }} ;;
+              pod) oc delete pod {{ target_name }} -n {{ item.namespace }} ;;
             esac
+
+        - name: Status: Restart command issued
+          debug:
+            msg: "Restart triggered for {{ target_name }}"
 
         # ---- UNIVERSAL WAIT ----
 
@@ -123,6 +137,10 @@
           retries: 120
           delay: 10
 
+        - name: Status: New pod object detected
+          debug:
+            msg: "New pod = {{ new_pod.stdout }}"
+
         - name: Wait until pod phase is Running
           shell: oc get pod {{ new_pod.stdout }} -n {{ item.namespace }} -o jsonpath='{.status.phase}'
           register: pod_phase
@@ -130,12 +148,20 @@
           retries: 180
           delay: 10
 
+        - name: Status: Pod is Running
+          debug:
+            msg: "Pod phase = {{ pod_phase.stdout }}"
+
         - name: Wait until all containers are Ready
           shell: oc get pod {{ new_pod.stdout }} -n {{ item.namespace }} -o jsonpath='{.status.containerStatuses[*].ready}'
           register: pod_ready
           until: "'false' not in pod_ready.stdout"
           retries: 180
           delay: 10
+
+        - name: Status: Containers Ready
+          debug:
+            msg: "Container ready flags = {{ pod_ready.stdout }}"
 
         - name: Fail if pod not healthy
           fail:
@@ -154,6 +180,10 @@
           set_fact:
             log_content: "{{ log_content }}\n{{ item.name }} AFTER:\n{{ after_out.stdout }}"
 
+        - name: === END COMPONENT ===
+          debug:
+            msg: "<<< Completed {{ item.name | upper }}"
+
     - name: Save full run output to log archive
       copy:
         dest: "{{ log_dir }}/mstr_restart_{{ run_time }}.log"
@@ -169,6 +199,7 @@
         state: absent
       loop: "{{ log_list.stdout_lines[5:] }}"
       when: log_list.stdout_lines | length > 5
+
 
 
 @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@222
